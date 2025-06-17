@@ -1,9 +1,65 @@
-# Node / Python artefacts
-node_modules/
-.venv/
-__pycache__/
-.DS_Store
-
-# Secrets
+# Environment variables
 .env
 .env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# n8n exports (will be manually committed)
+# workflows/*.json
+
+# Database
+*.db
+*.sqlite
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Docker
+.dockerignore

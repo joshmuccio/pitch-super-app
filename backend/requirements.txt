@@ -1,0 +1,15 @@
+# Core Web Framework
+fastapi
+uvicorn[standard]
+
+# Database & Vector Store
+supabase
+pgvector
+
+# AI & LLM
+openai>=1.6.1
+langchain
+langchain-openai
+
+# Environment & Config
+python-dotenv 
