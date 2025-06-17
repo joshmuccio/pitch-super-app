@@ -4,6 +4,9 @@ from typing import List, Dict, Any
 import os
 from dotenv import load_dotenv
 
+# Import scraper functionality
+from app.scraper import ScrapePayload, scrape_linkedin_posts
+
 # Load environment variables
 load_dotenv()
 
@@ -31,6 +34,10 @@ class SummarizeResponse(BaseModel):
     summaries: Dict[str, str]  # model_name -> summary_md
     status: str
 
+class ScrapeResponse(BaseModel):
+    posts: List[Dict[str, Any]]
+    status: str
+
 # Health check endpoint (for Docker health check)
 @app.get("/health")
 async def health_check():
@@ -44,7 +51,7 @@ async def root():
     return {
         "message": "Pitch Super App API",
         "status": "running",
-        "endpoints": ["/health", "/embed", "/summarize"]
+        "endpoints": ["/health", "/embed", "/summarize", "/scrape"]
     }
 
 # Embedding endpoint (Day 2 implementation)
@@ -74,6 +81,25 @@ async def summarize_posts(request: SummarizeRequest):
         },
         "status": "ok"
     }
+
+# LinkedIn scraping endpoint (Day 1 implementation)
+@app.post("/scrape", response_model=ScrapeResponse)
+async def scrape_linkedin(request: ScrapePayload):
+    """
+    Scrape LinkedIn posts from a founder's profile using Playwright
+    Returns posts that can be inserted into Supabase with embedding = NULL
+    """
+    try:
+        posts = await scrape_linkedin_posts(request)
+        return {
+            "posts": posts,
+            "status": "ok"
+        }
+    except Exception as e:
+        return {
+            "posts": [],
+            "status": f"error: {str(e)}"
+        }
 
 if __name__ == "__main__":
     import uvicorn
