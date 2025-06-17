@@ -1,0 +1,128 @@
+{
+  "name": "LinkedIn Backfill",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "start-node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "start_date",
+              "value": "2023-01-01"
+            }
+          ]
+        }
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "founder-urls",
+              "name": "founder_profiles",
+              "type": "array",
+              "value": [
+                "https://linkedin.com/in/founder1",
+                "https://linkedin.com/in/founder2",
+                "https://linkedin.com/in/founder3"
+              ]
+            }
+          ]
+        }
+      },
+      "id": "founder-list",
+      "name": "Founder URLs",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// LinkedIn Scraping with Puppeteer\nconst puppeteer = require('puppeteer');\n\nconst linkedinEmail = $env.LINKEDIN_EMAIL;\nconst linkedinPassword = $env.LINKEDIN_PASSWORD;\nconst startDate = new Date($node['Set Variables'].json.start_date);\n\n// Get current founder URL\nconst founderUrl = $input.item.json.founder_profiles;\n\nconst scrapePosts = async () => {\n  const browser = await puppeteer.launch({ headless: false });\n  const page = await browser.newPage();\n  \n  try {\n    // Login to LinkedIn\n    await page.goto('https://linkedin.com/login');\n    await page.type('#username', linkedinEmail);\n    await page.type('#password', linkedinPassword);\n    await page.click('[type=\"submit\"]');\n    await page.waitForNavigation();\n    \n    // Navigate to founder's activity page\n    const activityUrl = `${founderUrl}/recent-activity/all/`;\n    await page.goto(activityUrl);\n    \n    const posts = [];\n    let shouldContinue = true;\n    \n    while (shouldContinue) {\n      // Wait for network idle after each scroll\n      await page.waitForNetworkIdle({ timeout: 3000 });\n      \n      // Extract posts from current view\n      const newPosts = await page.evaluate((startDateStr) => {\n        const startDate = new Date(startDateStr);\n        const postElements = document.querySelectorAll('[data-urn*=\"urn:li:activity\"]');\n        const extractedPosts = [];\n        \n        postElements.forEach(post => {\n          try {\n            // Extract post text (strip HTML)\n            const textElement = post.querySelector('.feed-shared-text');\n            const postText = textElement ? textElement.innerText.trim() : '';\n            \n            // Extract post URL\n            const linkElement = post.querySelector('a[href*=\"/posts/\"]');\n            const postUrl = linkElement ? linkElement.href : '';\n            \n            // Extract posted date\n            const timeElement = post.querySelector('time');\n            const postedAt = timeElement ? timeElement.getAttribute('datetime') : '';\n            \n            if (postText && postUrl && postedAt) {\n              const postDate = new Date(postedAt);\n              \n              // Stop if we've reached the start date\n              if (postDate < startDate) {\n                return { shouldStop: true };\n              }\n              \n              extractedPosts.push({\n                post_text: postText,\n                post_url: postUrl,\n                posted_at: postedAt,\n                scraped_at: new Date().toISOString()\n              });\n            }\n          } catch (err) {\n            console.log('Error extracting post:', err);\n          }\n        });\n        \n        return extractedPosts;\n      }, startDate.toISOString());\n      \n      // Check if we should stop\n      const stopPost = newPosts.find(post => post.shouldStop);\n      if (stopPost) {\n        shouldContinue = false;\n      }\n      \n      // Add new posts\n      posts.push(...newPosts.filter(post => !post.shouldStop));\n      \n      // Scroll down to load more posts\n      if (shouldContinue) {\n        await page.evaluate(() => {\n          window.scrollTo(0, document.body.scrollHeight);\n        });\n        \n        // Wait a bit for new content to load\n        await page.waitForTimeout(2000);\n      }\n    }\n    \n    await browser.close();\n    \n    return posts.map(post => ({\n      ...post,\n      founder_url: founderUrl\n    }));\n    \n  } catch (error) {\n    await browser.close();\n    throw error;\n  }\n};\n\n// Execute scraping\nconst results = await scrapePosts();\n\nreturn results.map(post => ({ json: post }));"
+      },
+      "id": "linkedin-scraper",
+      "name": "LinkedIn Scraper",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "query": "INSERT INTO linkedin_posts (founder_id, post_text, post_url, posted_at, scraped_at, embedding) VALUES ($1, $2, $3, $4, $5, NULL)",
+        "additionalFields": {
+          "mode": "multiple"
+        }
+      },
+      "id": "supabase-insert",
+      "name": "Insert to Supabase",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1120, 300],
+      "credentials": {
+        "postgres": {
+          "id": "supabase-credentials",
+          "name": "Supabase DB"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Founder URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Founder URLs": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn Scraper": {
+      "main": [
+        [
+          {
+            "node": "Insert to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
