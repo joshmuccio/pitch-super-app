@@ -1,0 +1,9 @@
+# Node / Python artefacts
+node_modules/
+.venv/
+__pycache__/
+.DS_Store
+
+# Secrets
+.env
+.env.local
