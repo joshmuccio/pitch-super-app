@@ -19,7 +19,18 @@ load_dotenv()
 # Initialize Supabase client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")   # service role!
-sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Only initialize Supabase if we have valid credentials
+sb = None
+if SUPABASE_URL and SUPABASE_KEY and not SUPABASE_URL.startswith("your_"):
+    try:
+        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase client initialized")
+    except Exception as e:
+        print(f"⚠️ Supabase initialization failed: {e}")
+        sb = None
+else:
+    print("⚠️ Supabase credentials not configured - database features disabled")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -186,29 +197,33 @@ async def scrape_linkedin(payload: ScrapePayload):
                 debug_info=debug_info
             )
         
-        # Insert posts into database
+        # Insert posts into database (if Supabase is available)
         inserted_count = 0
-        for post in posts:
-            try:
-                # Create embedding for the post
-                embedding = create_embedding(post["post_text"])
-                
-                # Insert into database with conflict handling
-                result = sb.table("linkedin_posts").upsert({
-                    "founder_id": post.get("founder_id"),
-                    "company_id": post.get("company_id"),
-                    "post_text": post["post_text"],
-                    "post_url": post.get("post_url"),
-                    "posted_at": post["posted_at"],
-                    "embedding": embedding
-                }, on_conflict="founder_id,company_id,post_url").execute()
-                
-                if result.data:
-                    inserted_count += 1
+        if sb is not None:
+            for post in posts:
+                try:
+                    # Create embedding for the post
+                    embedding = await create_embedding(post["post_text"])
                     
-            except Exception as e:
-                print(f"Error inserting post: {e}")
-                continue
+                    # Insert into database with conflict handling
+                    result = sb.table("linkedin_posts").upsert({
+                        "founder_id": post.get("founder_id"),
+                        "company_id": post.get("company_id"),
+                        "post_text": post["post_text"],
+                        "post_url": post.get("post_url"),
+                        "posted_at": post["posted_at"],
+                        "embedding": embedding
+                    }, on_conflict="founder_id,company_id,post_url").execute()
+                    
+                    if result.data:
+                        inserted_count += 1
+                        
+                except Exception as e:
+                    print(f"Error inserting post: {e}")
+                    continue
+        else:
+            # Supabase not available - just return the posts for debugging
+            inserted_count = len(posts)
         
         return ScrapeResponse(
             inserted=inserted_count, 

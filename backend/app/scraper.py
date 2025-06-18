@@ -3,11 +3,14 @@ import asyncio
 import random
 from playwright.async_api import async_playwright
 try:
-    from playwright_stealth import stealth
+    from playwright_stealth import Stealth
+    stealth = Stealth()
 except ImportError:
     # Fallback if stealth is not available
-    async def stealth(page):
-        pass
+    class MockStealth:
+        async def apply_stealth_async(self, page):
+            pass
+    stealth = MockStealth()
 from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -31,8 +34,17 @@ class LinkedInScraper:
     """LinkedIn scraper service using Playwright"""
     
     def __init__(self):
+        # Load environment variables explicitly
+        from dotenv import load_dotenv
+        load_dotenv()
+        
         self.linkedin_user = os.getenv("LINKEDIN_USER")
         self.linkedin_pass = os.getenv("LINKEDIN_PASS")
+        
+        # Debug: Print what we actually got
+        print(f"🔐 LinkedIn credentials loaded - User: {bool(self.linkedin_user)}, Pass: {bool(self.linkedin_pass)}")
+        if self.linkedin_user:
+            print(f"📧 User email: {self.linkedin_user[:5]}***")  # Show first 5 chars only
         
     async def scrape_profile_posts(self, payload: ScrapePayload) -> Tuple[List[LinkedInPost], Dict[str, Any]]:
         """
@@ -87,7 +99,7 @@ class LinkedInScraper:
             page = browser.pages[0] if browser.pages else await browser.new_page()
             
             # Apply stealth mode to avoid detection
-            await stealth(page)
+            await stealth.apply_stealth_async(page)
             
             # Set page timeout to 30 seconds
             page.set_default_timeout(30000)
@@ -106,9 +118,23 @@ class LinkedInScraper:
                     debug_info["login_attempted"] = True
                     
                     await page.goto("https://www.linkedin.com/login", timeout=15000)
-                    await page.fill("#username", self.linkedin_user)
-                    await page.fill("#password", self.linkedin_pass)
-                    await page.click("button[type=submit]")
+                    
+                    # Validate credentials before attempting to fill
+                    if not self.linkedin_user or not self.linkedin_pass:
+                        debug_info["errors"].append(f"Missing credentials - user: {bool(self.linkedin_user)}, pass: {bool(self.linkedin_pass)}")
+                        debug_info["step"] = "missing_credentials"
+                        return [], debug_info
+                    
+                    # Fill login form with error handling
+                    try:
+                        await page.fill("#username", self.linkedin_user)
+                        await page.fill("#password", self.linkedin_pass)
+                        await page.click("button[type=submit]")
+                        debug_info["login_form_filled"] = True
+                    except Exception as e:
+                        debug_info["errors"].append(f"Login form error: {str(e)}")
+                        debug_info["step"] = "login_form_error"
+                        return [], debug_info
                     
                     debug_info["step"] = "login_waiting"
                     
@@ -138,14 +164,31 @@ class LinkedInScraper:
                 debug_info["profile_loaded"] = True
                 debug_info["step"] = "profile_loaded"
                 
-                # Wait for initial content load and count articles
-                try:
-                    await page.wait_for_selector("article", timeout=10000)
-                    articles_count = await page.eval_on_selector_all("article", "els => els.length")
-                    debug_info["articles_found"] = articles_count
-                    debug_info["step"] = "articles_found"
-                except Exception as e:
-                    debug_info["errors"].append(f"No articles found: {str(e)}")
+                # Wait for initial content load and count articles/posts
+                # Try multiple selectors for LinkedIn profile posts
+                selectors_to_try = [
+                    "article",  # General posts
+                    "[data-urn*='urn:li:activity']",  # LinkedIn activity URNs
+                    ".feed-shared-update-v2",  # LinkedIn feed updates
+                    ".occludable-update",  # LinkedIn post containers
+                    "[data-test-id*='post']",  # Test ID posts
+                ]
+                
+                articles_found = False
+                for selector in selectors_to_try:
+                    try:
+                        await page.wait_for_selector(selector, timeout=5000)
+                        articles_count = await page.eval_on_selector_all(selector, "els => els.length")
+                        debug_info["articles_found"] = articles_count
+                        debug_info["articles_selector"] = selector
+                        debug_info["step"] = "articles_found"
+                        articles_found = True
+                        break
+                    except Exception as e:
+                        debug_info["errors"].append(f"Selector '{selector}' failed: {str(e)}")
+                        continue
+                
+                if not articles_found:
                     debug_info["step"] = "no_articles"
                 
                 debug_info["step"] = "scrolling"
@@ -181,8 +224,7 @@ class LinkedInScraper:
                     try:
                         times = await page.eval_on_selector_all(
                             "time",
-                            "els => els.map(e => e.getAttribute('datetime'))",
-                            timeout=5000
+                            "els => els.map(e => e.getAttribute('datetime'))"
                         )
                         
                         if times and any(

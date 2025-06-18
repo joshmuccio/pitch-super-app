@@ -55,6 +55,9 @@ async def embed_single_chunk(text: str) -> List[float]:
     embeddings = await embed_chunks([text])
     return embeddings[0]
 
+# Alias for backwards compatibility
+create_embedding = embed_single_chunk
+
 def chunk_text(text: str, max_chunk_size: int = 8000) -> List[str]:
     """
     Split text into chunks for embedding processing.
