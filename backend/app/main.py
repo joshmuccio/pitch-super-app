@@ -16,16 +16,34 @@ from supabase import create_client
 # Load environment variables
 load_dotenv()
 
-# Initialize Supabase client
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")   # service role!
+# Environment variable validation
+def validate_environment():
+    """Validate and report on environment variables"""
+    env_status = {
+        "linkedin_user": bool(os.getenv("LINKEDIN_USER")),
+        "linkedin_pass": bool(os.getenv("LINKEDIN_PASS")),
+        "supabase_url": bool(os.getenv("SUPABASE_URL")),
+        "supabase_key": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")),
+        "openai_key": bool(os.getenv("OPENAI_API_KEY"))
+    }
+    
+    print("🔍 Environment Variable Status:")
+    for key, status in env_status.items():
+        status_icon = "✅" if status else "❌"
+        print(f"  {status_icon} {key.upper()}: {'SET' if status else 'NOT SET'}")
+    
+    return env_status
 
-# Only initialize Supabase if we have valid credentials
+# Initialize Supabase client with better error handling
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
 sb = None
-if SUPABASE_URL and SUPABASE_KEY and not SUPABASE_URL.startswith("your_"):
+if SUPABASE_URL and SUPABASE_KEY and SUPABASE_URL != "your_supabase_url_here":
     try:
+        from supabase import create_client
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("✅ Supabase client initialized")
+        print("✅ Supabase client initialized successfully")
     except Exception as e:
         print(f"⚠️ Supabase initialization failed: {e}")
         sb = None
@@ -38,6 +56,34 @@ app = FastAPI(
     description="AI-powered content analysis for The Pitch Fund",
     version="1.0.0"
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Startup event to validate environment and report status"""
+    print("🚀 Starting Pitch Super App API...")
+    
+    # Validate environment
+    env_status = validate_environment()
+    
+    # Check LinkedIn credentials specifically
+    linkedin_user = os.getenv("LINKEDIN_USER")
+    linkedin_pass = os.getenv("LINKEDIN_PASS")
+    
+    if linkedin_user and linkedin_pass:
+        print(f"🔐 LinkedIn credentials loaded - User: True, Pass: True")
+        # Mask email for security
+        masked_email = linkedin_user[:5] + "***" if len(linkedin_user) > 5 else "***"
+        print(f"📧 User email: {masked_email}")
+    else:
+        print("❌ LinkedIn credentials missing - scraping will not work")
+    
+    # Check if we're in a production environment
+    if os.getenv("RENDER"):
+        print("🌐 Running on Render")
+    else:
+        print("💻 Running locally")
+    
+    print("✅ Startup complete")
 
 # Request/Response models
 class EmbedRequest(BaseModel):
@@ -64,8 +110,24 @@ class ScrapeResponse(BaseModel):
 # Health check endpoint (for Docker health check)
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring"""
-    return {"status": "healthy", "service": "pitch-super-app-api"}
+    """Health check endpoint with environment diagnostics"""
+    env_status = validate_environment()
+    
+    return {
+        "status": "healthy", 
+        "service": "pitch-super-app-api",
+        "environment": {
+            "linkedin_configured": env_status["linkedin_user"] and env_status["linkedin_pass"],
+            "supabase_configured": env_status["supabase_url"] and env_status["supabase_key"],
+            "openai_configured": env_status["openai_key"],
+            "render_environment": bool(os.getenv("RENDER"))
+        },
+        "features": {
+            "scraping": env_status["linkedin_user"] and env_status["linkedin_pass"],
+            "database": sb is not None,
+            "embeddings": env_status["openai_key"]
+        }
+    }
 
 # Root endpoint
 @app.get("/")
