@@ -23,8 +23,8 @@ class LinkedInScraper:
     """LinkedIn scraper service using Playwright"""
     
     def __init__(self):
-        self.linkedin_email = os.getenv("LINKEDIN_EMAIL")
-        self.linkedin_password = os.getenv("LINKEDIN_PASSWORD")
+        self.linkedin_user = os.getenv("LINKEDIN_USER")
+        self.linkedin_pass = os.getenv("LINKEDIN_PASS")
         
     async def scrape_profile_posts(self, payload: ScrapePayload) -> List[LinkedInPost]:
         """
@@ -45,8 +45,8 @@ class LinkedInScraper:
             try:
                 # Login to LinkedIn
                 await page.goto("https://www.linkedin.com/login")
-                await page.fill("#username", self.linkedin_email)
-                await page.fill("#password", self.linkedin_password)
+                await page.fill("#username", self.linkedin_user)
+                await page.fill("#password", self.linkedin_pass)
                 await page.click("button[type=submit]")
                 await page.wait_for_load_state("networkidle")
                 
