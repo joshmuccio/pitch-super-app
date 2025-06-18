@@ -73,10 +73,13 @@ class LinkedInScraper:
         
         # Use persistent context to maintain login session
         async with async_playwright() as pw:
+            # Detect if running in production (Render) or locally
+            is_production = bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT")) or not os.getenv("HOME", "").startswith("/Users/")
+            
             browser = await pw.chromium.launch_persistent_context(
                 user_data_dir="/tmp/linkedin_cache",
-                headless=False,  # Run in headful mode for debugging
-                slow_mo=100,     # Slow down actions to see what's happening
+                headless=is_production,  # Run headless in production, headed locally for debugging
+                slow_mo=0 if is_production else 100,  # No slow motion in production
                 args=[
                     '--no-sandbox', 
                     '--disable-dev-shm-usage',  # Helps with Docker

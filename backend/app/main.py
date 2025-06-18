@@ -326,10 +326,13 @@ async def simple_scrape_test(
             return {"error": "LinkedIn credentials not configured"}
         
         async with async_playwright() as pw:
+            # Detect if running in production
+            is_production = bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT")) or not os.getenv("HOME", "").startswith("/Users/")
+            
             browser = await pw.chromium.launch_persistent_context(
                 user_data_dir="/tmp/linkedin_cache",
-                headless=False,
-                slow_mo=100,
+                headless=is_production,  # Run headless in production
+                slow_mo=0 if is_production else 100,
                 args=['--no-sandbox', '--disable-dev-shm-usage'],
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                 viewport={"width": 1920, "height": 1080}
@@ -449,10 +452,13 @@ async def debug_timing_test(
         stages = {}
         
         async with async_playwright() as pw:
+            # Detect if running in production
+            is_production = bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT")) or not os.getenv("HOME", "").startswith("/Users/")
+            
             browser = await pw.chromium.launch_persistent_context(
                 user_data_dir="/tmp/linkedin_cache",
-                headless=False,
-                slow_mo=100,
+                headless=is_production,  # Run headless in production
+                slow_mo=0 if is_production else 100,
                 args=['--no-sandbox', '--disable-dev-shm-usage'],
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                 viewport={"width": 1920, "height": 1080}
@@ -567,10 +573,13 @@ async def working_scrape_test(
         start_dt = datetime.fromisoformat(start_date)
         
         async with async_playwright() as pw:
+            # Detect if running in production
+            is_production = bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT")) or not os.getenv("HOME", "").startswith("/Users/")
+            
             browser = await pw.chromium.launch_persistent_context(
                 user_data_dir="/tmp/linkedin_cache",
-                headless=False,
-                slow_mo=100,
+                headless=is_production,  # Run headless in production
+                slow_mo=0 if is_production else 100,
                 args=['--no-sandbox', '--disable-dev-shm-usage'],
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                 viewport={"width": 1920, "height": 1080}
