@@ -159,32 +159,44 @@ class LinkedInScraper:
                 
                 debug_info["step"] = "navigating_to_profile"
                 
-                # Navigate to profile (with timeout)
-                await page.goto(payload.linkedin_url, timeout=15000)
+                # Navigate to profile activity page (where posts are actually located)
+                activity_url = payload.linkedin_url.rstrip('/') + '/recent-activity/'
+                await page.goto(activity_url, timeout=15000)
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                
+                # Use the EXACT same timing as the successful timing test
+                await page.wait_for_timeout(3000)  # This is when posts load based on timing test
+                
+                # Don't wait for selectors - just proceed to capture HTML like timing test does
+                debug_info["timing_test_approach"] = True
+                
                 debug_info["profile_loaded"] = True
-                debug_info["step"] = "profile_loaded"
+                debug_info["activity_url"] = activity_url
+                debug_info["step"] = "activity_page_loaded"
                 
                 # Wait for initial content load and count articles/posts
-                # Try multiple selectors for LinkedIn profile posts
+                # Try multiple selectors for LinkedIn activity page posts (based on testing)
                 selectors_to_try = [
-                    "article",  # General posts
-                    "[data-urn*='urn:li:activity']",  # LinkedIn activity URNs
-                    ".feed-shared-update-v2",  # LinkedIn feed updates
-                    ".occludable-update",  # LinkedIn post containers
-                    "[data-test-id*='post']",  # Test ID posts
+                    ".feed-shared-update-v2",  # LinkedIn feed updates (WORKS - found 5)
+                    ".occludable-update",  # LinkedIn update containers (WORKS - found 8)
+                    "[data-urn*='activity']",  # Activity URNs (WORKS - found 5)
+                    ".artdeco-card",  # LinkedIn card components (WORKS - found 20)
+                    "article",  # General posts (fallback)
                 ]
                 
                 articles_found = False
                 for selector in selectors_to_try:
                     try:
-                        await page.wait_for_selector(selector, timeout=5000)
+                        await page.wait_for_selector(selector, timeout=3000)  # Reduced timeout
                         articles_count = await page.eval_on_selector_all(selector, "els => els.length")
                         debug_info["articles_found"] = articles_count
                         debug_info["articles_selector"] = selector
                         debug_info["step"] = "articles_found"
+                        print(f"✅ Found {articles_count} posts using selector: {selector}")
                         articles_found = True
                         break
                     except Exception as e:
+                        print(f"❌ Selector '{selector}' failed: {str(e)[:100]}")
                         debug_info["errors"].append(f"Selector '{selector}' failed: {str(e)}")
                         continue
                 
@@ -202,18 +214,18 @@ class LinkedInScraper:
                     # Scroll down
                     await page.evaluate("window.scrollBy(0, window.innerHeight)")
                     
-                    # Wait for LinkedIn posts to load (more specific selector)
+                    # Wait for LinkedIn activity posts to load (using selectors we know work)
                     try:
-                        await page.wait_for_selector("article div.feed-shared-update-v2", timeout=12000)
+                        await page.wait_for_selector(".feed-shared-update-v2", timeout=5000)
                         debug_info[f"scroll_{scroll_count}_posts_loaded"] = True
                     except Exception as e:
-                        debug_info["errors"].append(f"Scroll {scroll_count}: No posts loaded - {str(e)}")
-                        # Try alternative selectors
+                        debug_info["errors"].append(f"Scroll {scroll_count}: No feed updates - {str(e)}")
+                        # Try alternative activity selectors
                         try:
-                            await page.wait_for_selector("article", timeout=5000)
-                            debug_info[f"scroll_{scroll_count}_articles_found"] = True
+                            await page.wait_for_selector(".occludable-update", timeout=3000)
+                            debug_info[f"scroll_{scroll_count}_occludable_found"] = True
                         except:
-                            debug_info["errors"].append(f"Scroll {scroll_count}: No articles found either")
+                            debug_info["errors"].append(f"Scroll {scroll_count}: No occludable updates either")
                     
                     # Human-like random delay
                     random_delay = 1500 + random.randint(0, 1500)
@@ -263,22 +275,56 @@ class LinkedInScraper:
         
         debug_info["step"] = "parsing_html"
         
-        # Parse HTML with BeautifulSoup
+        # Parse HTML with BeautifulSoup using LinkedIn activity selectors
         soup = BeautifulSoup(html, "html.parser")
-        articles = soup.select("article")
-        debug_info["soup_articles"] = len(articles)
+        
+        # Try the selectors we know work, in order of preference
+        activity_posts = []
+        selectors_tried = []
+        
+        for selector in [".feed-shared-update-v2", ".occludable-update", "[data-urn*='activity']", ".artdeco-card"]:
+            posts = soup.select(selector)
+            selectors_tried.append(f"{selector}: {len(posts)}")
+            if posts:
+                activity_posts = posts
+                debug_info["soup_selector_used"] = selector
+                break
+        
+        debug_info["soup_selectors_tried"] = selectors_tried
+        debug_info["soup_articles"] = len(activity_posts)
         
         posts = []
         
-        for i, article in enumerate(articles):
+        for i, article in enumerate(activity_posts):
+            # Try multiple ways to find time information
+            time_elem = None
+            datetime_attr = None
+            
+            # Method 1: Direct time element
             time_elem = article.find("time")
-            if not time_elem:
-                debug_info["errors"].append(f"Article {i}: No time element found")
-                continue
-                
-            datetime_attr = time_elem.attrs.get("datetime") if time_elem.attrs else None
+            if time_elem and hasattr(time_elem, 'attrs') and time_elem.attrs:
+                datetime_attr = time_elem.attrs.get("datetime")
+            
+            # Method 2: Look for time element anywhere in the article
             if not datetime_attr:
-                debug_info["errors"].append(f"Article {i}: No datetime attribute")
+                all_times = article.find_all("time")
+                for t in all_times:
+                    if hasattr(t, 'attrs') and t.attrs and t.attrs.get("datetime"):
+                        time_elem = t
+                        datetime_attr = t.attrs.get("datetime")
+                        break
+            
+            # Method 3: Look for aria-label with date info
+            if not datetime_attr:
+                for elem in article.find_all(attrs={"aria-label": True}):
+                    aria_label = elem.get("aria-label", "")
+                    if any(word in aria_label.lower() for word in ["ago", "day", "week", "month", "year"]):
+                        debug_info["errors"].append(f"Article {i}: Found aria-label with time: {aria_label[:100]}")
+                        # For now, skip these posts as we can't parse relative dates easily
+                        continue
+            
+            if not datetime_attr:
+                debug_info["errors"].append(f"Article {i}: No time element found after all methods")
                 continue
                 
             try:
@@ -328,10 +374,10 @@ async def scrape_linkedin_posts(payload: ScrapePayload) -> Tuple[List[Dict[str, 
         Tuple of (List of post dictionaries, debug_info dict)
     """
     try:
-        # Add overall timeout of 2 minutes for the entire operation
+        # Add overall timeout of 90 seconds for the entire operation
         posts, debug_info = await asyncio.wait_for(
             linkedin_scraper.scrape_profile_posts(payload),
-            timeout=120.0
+            timeout=90.0
         )
         return [post.dict() for post in posts], debug_info
     except asyncio.TimeoutError:

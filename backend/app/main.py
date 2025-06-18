@@ -238,6 +238,432 @@ async def scrape_linkedin(payload: ScrapePayload):
             debug_info={"error": str(e)}
         )
 
+@app.get("/scrape/simple")
+async def simple_scrape_test(
+    linkedin_url: str = Query(..., description="LinkedIn profile URL")
+):
+    """
+    Simple test - just login and capture page content
+    """
+    try:
+        from playwright.async_api import async_playwright
+        from playwright_stealth import Stealth
+        from dotenv import load_dotenv
+        
+        # Load environment variables
+        load_dotenv()
+        linkedin_user = os.getenv("LINKEDIN_USER")
+        linkedin_pass = os.getenv("LINKEDIN_PASS")
+        
+        if not linkedin_user or not linkedin_pass:
+            return {"error": "LinkedIn credentials not configured"}
+        
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch_persistent_context(
+                user_data_dir="/tmp/linkedin_cache",
+                headless=False,
+                slow_mo=100,
+                args=['--no-sandbox', '--disable-dev-shm-usage'],
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                viewport={"width": 1920, "height": 1080}
+            )
+            
+            page = browser.pages[0] if browser.pages else await browser.new_page()
+            
+            # Apply stealth
+            stealth = Stealth()
+            await stealth.apply_stealth_async(page)
+            
+            # Set timeout
+            page.set_default_timeout(10000)
+            
+            try:
+                # Go to LinkedIn feed first
+                await page.goto("https://www.linkedin.com/feed", timeout=15000)
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                
+                # Check if we need to login
+                current_url = page.url
+                if "login" in current_url:
+                    await page.goto("https://www.linkedin.com/login", timeout=15000)
+                    await page.fill("#username", linkedin_user)
+                    await page.fill("#password", linkedin_pass)
+                    await page.click("button[type=submit]")
+                    await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                
+                # Try the direct activity URL first
+                activity_url = linkedin_url.rstrip('/') + '/recent-activity/'
+                await page.goto(activity_url, timeout=15000)
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                
+                # Wait a bit for dynamic content
+                await page.wait_for_timeout(3000)
+                
+                # Get page title and URL
+                title = await page.title()
+                url = page.url
+                
+                # Get page content
+                html = await page.content()
+                
+                # Count different elements including activity-specific ones
+                element_counts = {}
+                selectors = [
+                    "article", 
+                    "div", 
+                    "span", 
+                    "time", 
+                    "[data-urn]", 
+                    ".feed-shared-update-v2",
+                    "[data-urn*='activity']",  # Activity URNs
+                    ".feed-shared-update",      # General feed updates
+                    ".occludable-update",       # LinkedIn update containers
+                    "[data-test-id*='post']",   # Post test IDs
+                    ".artdeco-card",           # LinkedIn card components
+                ]
+                
+                for selector in selectors:
+                    try:
+                        count = await page.eval_on_selector_all(selector, "els => els.length")
+                        element_counts[selector] = count
+                    except:
+                        element_counts[selector] = 0
+                
+                # Look for activity-specific text
+                activity_indicators = {}
+                activity_texts = ["posted", "shared", "commented", "liked", "Activity", "Posts"]
+                for text in activity_texts:
+                    try:
+                        count = await page.eval_on_selector_all(
+                            f"text={text}", 
+                            "els => els.length"
+                        )
+                        activity_indicators[f"text_{text}"] = count
+                    except:
+                        activity_indicators[f"text_{text}"] = 0
+                
+                return {
+                    "status": "success",
+                    "title": title,
+                    "url": url,
+                    "html_length": len(html),
+                    "element_counts": element_counts,
+                    "activity_indicators": activity_indicators,
+                    "first_1000_chars": html[:1000]
+                }
+                
+            finally:
+                await browser.close()
+                
+    except Exception as e:
+        return {"error": f"Simple test failed: {str(e)}"}
+
+@app.get("/scrape/debug-timing")
+async def debug_timing_test(
+    linkedin_url: str = Query(..., description="LinkedIn profile URL")
+):
+    """
+    Debug timing - capture HTML at different stages
+    """
+    try:
+        from playwright.async_api import async_playwright
+        from playwright_stealth import Stealth
+        from dotenv import load_dotenv
+        from bs4 import BeautifulSoup
+        
+        # Load environment variables
+        load_dotenv()
+        linkedin_user = os.getenv("LINKEDIN_USER")
+        linkedin_pass = os.getenv("LINKEDIN_PASS")
+        
+        if not linkedin_user or not linkedin_pass:
+            return {"error": "LinkedIn credentials not configured"}
+        
+        stages = {}
+        
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch_persistent_context(
+                user_data_dir="/tmp/linkedin_cache",
+                headless=False,
+                slow_mo=100,
+                args=['--no-sandbox', '--disable-dev-shm-usage'],
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                viewport={"width": 1920, "height": 1080}
+            )
+            
+            page = browser.pages[0] if browser.pages else await browser.new_page()
+            
+            # Apply stealth
+            stealth = Stealth()
+            await stealth.apply_stealth_async(page)
+            
+            # Set timeout
+            page.set_default_timeout(10000)
+            
+            try:
+                # Login process
+                await page.goto("https://www.linkedin.com/feed", timeout=15000)
+                current_url = page.url
+                if "login" in current_url:
+                    await page.goto("https://www.linkedin.com/login", timeout=15000)
+                    await page.fill("#username", linkedin_user)
+                    await page.fill("#password", linkedin_pass)
+                    await page.click("button[type=submit]")
+                    await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                
+                # Navigate to activity page
+                activity_url = linkedin_url.rstrip('/') + '/recent-activity/'
+                await page.goto(activity_url, timeout=15000)
+                
+                # Stage 1: Immediately after navigation
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                html1 = await page.content()
+                soup1 = BeautifulSoup(html1, "html.parser")
+                stages["stage_1_after_nav"] = {
+                    "feed_shared_update_v2": len(soup1.select(".feed-shared-update-v2")),
+                    "occludable_update": len(soup1.select(".occludable-update")),
+                    "data_urn_activity": len(soup1.select("[data-urn*='activity']")),
+                    "artdeco_card": len(soup1.select(".artdeco-card")),
+                }
+                
+                # Stage 2: After 3 second wait
+                await page.wait_for_timeout(3000)
+                html2 = await page.content()
+                soup2 = BeautifulSoup(html2, "html.parser")
+                stages["stage_2_after_3s"] = {
+                    "feed_shared_update_v2": len(soup2.select(".feed-shared-update-v2")),
+                    "occludable_update": len(soup2.select(".occludable-update")),
+                    "data_urn_activity": len(soup2.select("[data-urn*='activity']")),
+                    "artdeco_card": len(soup2.select(".artdeco-card")),
+                }
+                
+                # Stage 3: After scroll
+                await page.evaluate("window.scrollBy(0, 500)")
+                await page.wait_for_timeout(2000)
+                html3 = await page.content()
+                soup3 = BeautifulSoup(html3, "html.parser")
+                stages["stage_3_after_scroll"] = {
+                    "feed_shared_update_v2": len(soup3.select(".feed-shared-update-v2")),
+                    "occludable_update": len(soup3.select(".occludable-update")),
+                    "data_urn_activity": len(soup3.select("[data-urn*='activity']")),
+                    "artdeco_card": len(soup3.select(".artdeco-card")),
+                }
+                
+                # Stage 4: After 10 second wait
+                await page.wait_for_timeout(10000)
+                html4 = await page.content()
+                soup4 = BeautifulSoup(html4, "html.parser")
+                stages["stage_4_after_10s"] = {
+                    "feed_shared_update_v2": len(soup4.select(".feed-shared-update-v2")),
+                    "occludable_update": len(soup4.select(".occludable-update")),
+                    "data_urn_activity": len(soup4.select("[data-urn*='activity']")),
+                    "artdeco_card": len(soup4.select(".artdeco-card")),
+                }
+                
+                return {
+                    "status": "success",
+                    "activity_url": activity_url,
+                    "stages": stages
+                }
+                
+            finally:
+                await browser.close()
+                
+    except Exception as e:
+        return {"error": f"Debug timing test failed: {str(e)}"}
+
+@app.get("/scrape/working")
+async def working_scrape_test(
+    linkedin_url: str = Query(..., description="LinkedIn profile URL"),
+    founder_id: str = Query(..., description="Founder ID"),
+    start_date: str = Query("2023-01-01", description="Start date YYYY-MM-DD")
+):
+    """
+    Working scraper using the exact same approach as the successful timing test
+    """
+    try:
+        from playwright.async_api import async_playwright
+        from playwright_stealth import Stealth
+        from dotenv import load_dotenv
+        from bs4 import BeautifulSoup
+        from datetime import datetime
+        
+        # Load environment variables
+        load_dotenv()
+        linkedin_user = os.getenv("LINKEDIN_USER")
+        linkedin_pass = os.getenv("LINKEDIN_PASS")
+        
+        if not linkedin_user or not linkedin_pass:
+            return {"error": "LinkedIn credentials not configured"}
+        
+        # Parse start date
+        start_dt = datetime.fromisoformat(start_date)
+        
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch_persistent_context(
+                user_data_dir="/tmp/linkedin_cache",
+                headless=False,
+                slow_mo=100,
+                args=['--no-sandbox', '--disable-dev-shm-usage'],
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                viewport={"width": 1920, "height": 1080}
+            )
+            
+            page = browser.pages[0] if browser.pages else await browser.new_page()
+            
+            # Apply stealth
+            stealth = Stealth()
+            await stealth.apply_stealth_async(page)
+            
+            # Set timeout
+            page.set_default_timeout(10000)
+            
+            try:
+                # Login process (same as timing test)
+                await page.goto("https://www.linkedin.com/feed", timeout=15000)
+                current_url = page.url
+                if "login" in current_url:
+                    await page.goto("https://www.linkedin.com/login", timeout=15000)
+                    await page.fill("#username", linkedin_user)
+                    await page.fill("#password", linkedin_pass)
+                    await page.click("button[type=submit]")
+                    await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                
+                # Navigate to activity page (same as timing test)
+                activity_url = linkedin_url.rstrip('/') + '/recent-activity/'
+                await page.goto(activity_url, timeout=15000)
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                
+                # Wait 3 seconds for posts to load (EXACT same as timing test)
+                await page.wait_for_timeout(3000)
+                
+                # Get HTML (same as timing test)
+                html = await page.content()
+                
+                # Parse with BeautifulSoup using the selectors we know work
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Use the selectors that worked in timing test
+                posts = []
+                
+                # Try feed-shared-update-v2 first (found 5 in timing test)
+                feed_updates = soup.select(".feed-shared-update-v2")
+                debug_post_info = []
+                
+                for i, update in enumerate(feed_updates):
+                    post_debug = {
+                        "post_index": i,
+                        "has_time_element": bool(update.find("time")),
+                        "time_elements_count": len(update.find_all("time")),
+                        "text_preview": update.get_text(" ", strip=True)[:200],
+                    }
+                    
+                    # Check for time elements and their attributes
+                    time_elements = update.find_all("time")
+                    for j, time_elem in enumerate(time_elements):
+                        if hasattr(time_elem, 'attrs') and time_elem.attrs:
+                            post_debug[f"time_{j}_attrs"] = dict(time_elem.attrs)
+                        else:
+                            post_debug[f"time_{j}_attrs"] = "no_attrs"
+                    
+                    # Check for any datetime-related attributes in the entire update
+                    datetime_attrs = []
+                    for elem in update.find_all(attrs=True):
+                        for attr_name, attr_value in elem.attrs.items():
+                            if 'date' in attr_name.lower() or 'time' in attr_name.lower():
+                                datetime_attrs.append(f"{attr_name}: {attr_value}")
+                    post_debug["datetime_related_attrs"] = datetime_attrs[:5]  # First 5 only
+                    
+                    debug_post_info.append(post_debug)
+                    
+                    # Extract post without requiring strict datetime (LinkedIn activity posts don't have <time> elements)
+                    # Extract post text
+                    post_text = " ".join(update.get_text(" ", strip=True).split())
+                    
+                    # Skip if post text is too short (likely not a real post)
+                    if len(post_text.strip()) < 50:
+                        continue
+                    
+                    # Extract post URL
+                    link_elem = update.select_one("a[href*='/feed/update']")
+                    post_url = None
+                    if link_elem and hasattr(link_elem, 'get'):
+                        href = link_elem.get("href")
+                        if href and isinstance(href, str):
+                            post_url = href.split("?")[0]
+                    
+                    # Look for relative time indicators in the text
+                    relative_time = None
+                    post_text_lower = post_text.lower()
+                    time_indicators = ["d ago", "day ago", "days ago", "w ago", "week ago", "weeks ago", "m ago", "month ago", "months ago", "y ago", "year ago", "years ago", "h ago", "hour ago", "hours ago"]
+                    for indicator in time_indicators:
+                        if indicator in post_text_lower:
+                            # Find the number before the indicator
+                            import re
+                            pattern = r'(\d+)\s*' + re.escape(indicator)
+                            match = re.search(pattern, post_text_lower)
+                            if match:
+                                relative_time = match.group(0)
+                                break
+                    
+                    posts.append({
+                        "founder_id": founder_id,
+                        "post_text": post_text,
+                        "post_url": post_url,
+                        "posted_at": relative_time or "unknown",  # Use relative time or "unknown"
+                        "extraction_method": "activity_page_no_datetime"
+                    })
+                
+                # If no posts from feed-shared-update-v2, try occludable-update
+                if not posts:
+                    occludable_updates = soup.select(".occludable-update")
+                    for i, update in enumerate(occludable_updates):
+                        time_elem = update.find("time")
+                        if time_elem and hasattr(time_elem, 'attrs') and time_elem.attrs:
+                            datetime_attr = time_elem.attrs.get("datetime")
+                            if datetime_attr:
+                                try:
+                                    posted = datetime.fromisoformat(datetime_attr)
+                                    if posted >= start_dt:
+                                        post_text = " ".join(update.get_text(" ", strip=True).split())
+                                        
+                                        link_elem = update.select_one("a[href*='/feed/update']")
+                                        post_url = None
+                                        if link_elem and hasattr(link_elem, 'get'):
+                                            href = link_elem.get("href")
+                                            if href and isinstance(href, str):
+                                                post_url = href.split("?")[0]
+                                        
+                                        posts.append({
+                                            "founder_id": founder_id,
+                                            "post_text": post_text,
+                                            "post_url": post_url,
+                                            "posted_at": posted.isoformat()
+                                        })
+                                except ValueError:
+                                    continue
+                
+                return {
+                    "status": "success",
+                    "posts_found": len(posts),
+                    "posts": posts,
+                    "debug_info": {
+                        "activity_url": activity_url,
+                        "html_length": len(html),
+                        "feed_shared_update_v2_count": len(soup.select(".feed-shared-update-v2")),
+                        "occludable_update_count": len(soup.select(".occludable-update")),
+                        "data_urn_activity_count": len(soup.select("[data-urn*='activity']")),
+                        "artdeco_card_count": len(soup.select(".artdeco-card")),
+                        "debug_post_info": debug_post_info
+                    }
+                }
+                
+            finally:
+                await browser.close()
+                
+    except Exception as e:
+        return {"error": f"Working scraper failed: {str(e)}"}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
