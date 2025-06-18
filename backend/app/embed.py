@@ -6,10 +6,27 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client
-client = AsyncOpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+# Initialize OpenAI client with error handling
+def get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("⚠️ OPENAI_API_KEY not found - embedding features disabled")
+        return None
+    
+    try:
+        return AsyncOpenAI(api_key=api_key)
+    except Exception as e:
+        print(f"⚠️ OpenAI client initialization failed: {e}")
+        return None
+
+# Global client instance (initialized lazily)
+_client = None
+
+def get_client():
+    global _client
+    if _client is None:
+        _client = get_openai_client()
+    return _client
 
 async def embed_chunks(chunks: List[str]) -> List[List[float]]:
     """
@@ -23,8 +40,12 @@ async def embed_chunks(chunks: List[str]) -> List[List[float]]:
         List of embedding vectors (each vector has 1536 dimensions)
         
     Raises:
-        Exception: If OpenAI API call fails
+        Exception: If OpenAI API call fails or client not available
     """
+    client = get_client()
+    if client is None:
+        raise Exception("OpenAI client not available - check OPENAI_API_KEY environment variable")
+    
     try:
         # Call OpenAI embedding API
         response = await client.embeddings.create(

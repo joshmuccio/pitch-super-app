@@ -202,8 +202,13 @@ async def scrape_linkedin(payload: ScrapePayload):
         if sb is not None:
             for post in posts:
                 try:
-                    # Create embedding for the post
-                    embedding = await create_embedding(post["post_text"])
+                    # Create embedding for the post (if OpenAI is available)
+                    embedding = None
+                    try:
+                        embedding = await create_embedding(post["post_text"])
+                    except Exception as e:
+                        print(f"⚠️ Embedding creation failed: {e}")
+                        # Continue without embedding
                     
                     # Insert into database with conflict handling
                     result = sb.table("linkedin_posts").upsert({
