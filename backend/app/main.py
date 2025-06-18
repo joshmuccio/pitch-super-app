@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import os
@@ -195,7 +195,8 @@ async def scrape_info():
 
 @app.get("/scrape/debug")
 async def debug_scrape(
-    linkedin_url: str = Query(..., description="LinkedIn profile URL"),
+    request: Request,
+    linkedin_url: str = Query(None, description="LinkedIn profile URL"),
     founder_id: str = Query(None, description="Founder UUID"),
     company_id: str = Query(None, description="Company UUID"),
     start_date: str = Query(default="2023-01-01", description="Start date (YYYY-MM-DD)")
@@ -203,6 +204,28 @@ async def debug_scrape(
     """
     Debug endpoint to test LinkedIn scraping with detailed information
     """
+    
+    # First, return debug info about what we received
+    debug_request_info = {
+        "method": request.method,
+        "url": str(request.url),
+        "query_params": dict(request.query_params),
+        "received_params": {
+            "linkedin_url": linkedin_url,
+            "founder_id": founder_id,
+            "company_id": company_id,
+            "start_date": start_date
+        }
+    }
+    
+    # Check if linkedin_url is missing
+    if not linkedin_url:
+        return [{
+            "error": "linkedin_url parameter is required",
+            "debug_info": debug_request_info,
+            "status": "missing_linkedin_url"
+        }]
+    
     try:
         from .scraper import ScrapePayload, scrape_linkedin_posts
         
@@ -739,6 +762,17 @@ async def working_scrape_test(
                 
     except Exception as e:
         return {"error": f"Working scraper failed: {str(e)}"}
+
+@app.get("/debug/params")
+async def debug_params(request: Request):
+    """Debug endpoint to see what parameters are being received"""
+    return {
+        "method": request.method,
+        "url": str(request.url),
+        "query_params": dict(request.query_params),
+        "headers": dict(request.headers),
+        "path_params": request.path_params
+    }
 
 if __name__ == "__main__":
     import uvicorn
