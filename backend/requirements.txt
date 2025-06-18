@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 playwright
+playwright-stealth
 bs4               # html parsing
 python-dotenv
 supabase>=2       # you'll use later for direct inserts

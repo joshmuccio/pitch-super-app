@@ -1,6 +1,13 @@
 import os
 import asyncio
+import random
 from playwright.async_api import async_playwright
+try:
+    from playwright_stealth import stealth
+except ImportError:
+    # Fallback if stealth is not available
+    async def stealth(page):
+        pass
 from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -52,43 +59,77 @@ class LinkedInScraper:
         
         start_dt = datetime.fromisoformat(payload.start_date)
         
-        # Set browser timeout to prevent hanging
+        # Use persistent context to maintain login session
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage']  # Helps with Docker
+            browser = await pw.chromium.launch_persistent_context(
+                user_data_dir="/tmp/linkedin_cache",
+                headless=False,  # Run in headful mode for debugging
+                slow_mo=100,     # Slow down actions to see what's happening
+                args=[
+                    '--no-sandbox', 
+                    '--disable-dev-shm-usage',  # Helps with Docker
+                    '--disable-blink-features=AutomationControlled',  # Hide automation
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor'
+                ],
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                }
             )
-            page = await browser.new_page()
+            
+            # Get the existing page or create a new one
+            page = browser.pages[0] if browser.pages else await browser.new_page()
+            
+            # Apply stealth mode to avoid detection
+            await stealth(page)
             
             # Set page timeout to 30 seconds
             page.set_default_timeout(30000)
             
             try:
-                debug_info["step"] = "login_starting"
+                debug_info["step"] = "checking_login_status"
                 
-                # Login to LinkedIn (with timeout)
-                await page.goto("https://www.linkedin.com/login", timeout=15000)
-                await page.fill("#username", self.linkedin_user)
-                await page.fill("#password", self.linkedin_pass)
-                await page.click("button[type=submit]")
+                # Check if we're already logged in by going to feed
+                await page.goto("https://www.linkedin.com/feed", timeout=15000)
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
                 
-                debug_info["login_attempted"] = True
-                debug_info["step"] = "login_waiting"
-                
-                # Wait for login completion (reduced timeout)
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=20000)
-                    # Check if we're still on login page (login failed)
-                    current_url = page.url
-                    if "login" not in current_url:
-                        debug_info["login_success"] = True
-                        debug_info["step"] = "login_success"
-                    else:
-                        debug_info["errors"].append("Still on login page after attempt")
-                        debug_info["step"] = "login_failed"
-                except Exception as e:
-                    debug_info["errors"].append(f"Login wait timeout: {str(e)}")
-                    debug_info["step"] = "login_timeout"
+                current_url = page.url
+                if "login" in current_url or "challenge" in current_url:
+                    # Need to log in
+                    debug_info["step"] = "login_required"
+                    debug_info["login_attempted"] = True
+                    
+                    await page.goto("https://www.linkedin.com/login", timeout=15000)
+                    await page.fill("#username", self.linkedin_user)
+                    await page.fill("#password", self.linkedin_pass)
+                    await page.click("button[type=submit]")
+                    
+                    debug_info["step"] = "login_waiting"
+                    
+                    # Wait for login completion
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                        # Check if login was successful
+                        current_url = page.url
+                        if "login" not in current_url and "challenge" not in current_url:
+                            debug_info["login_success"] = True
+                            debug_info["step"] = "login_success"
+                        else:
+                            debug_info["errors"].append("Login failed or requires additional verification")
+                            debug_info["step"] = "login_failed"
+                    except Exception as e:
+                        debug_info["errors"].append(f"Login wait timeout: {str(e)}")
+                        debug_info["step"] = "login_timeout"
+                else:
+                    # Already logged in
+                    debug_info["login_success"] = True
+                    debug_info["step"] = "already_logged_in"
                 
                 debug_info["step"] = "navigating_to_profile"
                 
@@ -109,7 +150,7 @@ class LinkedInScraper:
                 
                 debug_info["step"] = "scrolling"
                 
-                # Controlled scrolling with limits
+                # Enhanced scrolling strategy - wait for actual content and add randomization
                 scroll_count = 0
                 max_scrolls = payload.max_scrolls or 10
                 reached_oldest = False
@@ -118,8 +159,23 @@ class LinkedInScraper:
                     # Scroll down
                     await page.evaluate("window.scrollBy(0, window.innerHeight)")
                     
-                    # Reduced wait time from 1200ms to 800ms
-                    await page.wait_for_timeout(800)
+                    # Wait for LinkedIn posts to load (more specific selector)
+                    try:
+                        await page.wait_for_selector("article div.feed-shared-update-v2", timeout=12000)
+                        debug_info[f"scroll_{scroll_count}_posts_loaded"] = True
+                    except Exception as e:
+                        debug_info["errors"].append(f"Scroll {scroll_count}: No posts loaded - {str(e)}")
+                        # Try alternative selectors
+                        try:
+                            await page.wait_for_selector("article", timeout=5000)
+                            debug_info[f"scroll_{scroll_count}_articles_found"] = True
+                        except:
+                            debug_info["errors"].append(f"Scroll {scroll_count}: No articles found either")
+                    
+                    # Human-like random delay
+                    random_delay = 1500 + random.randint(0, 1500)
+                    await page.wait_for_timeout(random_delay)
+                    debug_info[f"scroll_{scroll_count}_delay"] = random_delay
                     
                     # Check if we've reached posts older than start_date
                     try:
@@ -135,9 +191,10 @@ class LinkedInScraper:
                         ):
                             reached_oldest = True
                             debug_info["step"] = "reached_oldest_posts"
+                            debug_info["oldest_post_found_at_scroll"] = scroll_count
                             
                     except Exception as e:
-                        debug_info["errors"].append(f"Time evaluation error: {str(e)}")
+                        debug_info["errors"].append(f"Time evaluation error at scroll {scroll_count}: {str(e)}")
                     
                     scroll_count += 1
                 
