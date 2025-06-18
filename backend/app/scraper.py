@@ -124,8 +124,8 @@ class LinkedInScraper:
             # Apply stealth mode to avoid detection
             await stealth.apply_stealth_async(page)
             
-            # Set page timeout to 30 seconds
-            page.set_default_timeout(30000)
+            # Set page timeout to 15 seconds for faster operation
+            page.set_default_timeout(15000)
             
             try:
                 debug_info["step"] = "checking_login_status"
@@ -187,8 +187,8 @@ class LinkedInScraper:
                 await page.goto(activity_url, timeout=15000)
                 await page.wait_for_load_state("domcontentloaded", timeout=10000)
                 
-                # Use the EXACT same timing as the successful timing test
-                await page.wait_for_timeout(3000)  # This is when posts load based on timing test
+                # Reduced wait time for faster operation
+                await page.wait_for_timeout(1500)  # Reduced from 3 seconds to 1.5 seconds
                 
                 # Don't wait for selectors - just proceed to capture HTML like timing test does
                 debug_info["timing_test_approach"] = True
@@ -228,52 +228,27 @@ class LinkedInScraper:
                 
                 debug_info["step"] = "scrolling"
                 
-                # Enhanced scrolling strategy - wait for actual content and add randomization
+                # Fast scrolling strategy - minimal waits, get content quickly
                 scroll_count = 0
-                max_scrolls = payload.max_scrolls or 10
-                reached_oldest = False
+                max_scrolls = min(payload.max_scrolls or 5, 5)  # Limit to 5 scrolls max for speed
                 
-                while not reached_oldest and scroll_count < max_scrolls:
-                    # Scroll down
-                    await page.evaluate("window.scrollBy(0, window.innerHeight)")
+                for scroll_count in range(max_scrolls):
+                    # Fast scroll down
+                    await page.evaluate("window.scrollBy(0, window.innerHeight * 2)")  # Scroll 2x height for speed
                     
-                    # Wait for LinkedIn activity posts to load (using selectors we know work)
+                    # Minimal wait - just 1 second instead of 3-5 seconds
+                    await page.wait_for_timeout(1000)
+                    debug_info[f"scroll_{scroll_count}_completed"] = True
+                    
+                    # Quick check for any posts without waiting for specific selectors
                     try:
-                        await page.wait_for_selector(".feed-shared-update-v2", timeout=5000)
-                        debug_info[f"scroll_{scroll_count}_posts_loaded"] = True
-                    except Exception as e:
-                        debug_info["errors"].append(f"Scroll {scroll_count}: No feed updates - {str(e)}")
-                        # Try alternative activity selectors
-                        try:
-                            await page.wait_for_selector(".occludable-update", timeout=3000)
-                            debug_info[f"scroll_{scroll_count}_occludable_found"] = True
-                        except:
-                            debug_info["errors"].append(f"Scroll {scroll_count}: No occludable updates either")
-                    
-                    # Human-like random delay
-                    random_delay = 1500 + random.randint(0, 1500)
-                    await page.wait_for_timeout(random_delay)
-                    debug_info[f"scroll_{scroll_count}_delay"] = random_delay
-                    
-                    # Check if we've reached posts older than start_date
-                    try:
-                        times = await page.eval_on_selector_all(
-                            "time",
-                            "els => els.map(e => e.getAttribute('datetime'))"
-                        )
-                        
-                        if times and any(
-                            datetime.fromisoformat(t) < start_dt 
-                            for t in times if t and t.strip()
-                        ):
-                            reached_oldest = True
-                            debug_info["step"] = "reached_oldest_posts"
-                            debug_info["oldest_post_found_at_scroll"] = scroll_count
-                            
-                    except Exception as e:
-                        debug_info["errors"].append(f"Time evaluation error at scroll {scroll_count}: {str(e)}")
-                    
-                    scroll_count += 1
+                        post_count = await page.eval_on_selector_all("article, .feed-shared-update-v2, .occludable-update", "els => els.length")
+                        debug_info[f"scroll_{scroll_count}_posts_found"] = post_count
+                        if post_count > 20:  # If we have enough posts, stop scrolling
+                            debug_info["early_stop_reason"] = f"Found {post_count} posts"
+                            break
+                    except:
+                        pass  # Continue even if count fails
                 
                 debug_info["step"] = "scrolling_complete"
                 debug_info["scrolls_performed"] = scroll_count
@@ -397,13 +372,13 @@ async def scrape_linkedin_posts(payload: ScrapePayload) -> Tuple[List[Dict[str, 
         Tuple of (List of post dictionaries, debug_info dict)
     """
     try:
-        # Add overall timeout of 90 seconds for the entire operation
+        # Increase timeout to 3 minutes for production environment
         posts, debug_info = await asyncio.wait_for(
             linkedin_scraper.scrape_profile_posts(payload),
-            timeout=90.0
+            timeout=180.0  # 3 minutes instead of 90 seconds
         )
         return [post.dict() for post in posts], debug_info
     except asyncio.TimeoutError:
-        return [{"error": "Scraping timed out after 2 minutes"}], {"step": "timeout", "errors": ["Overall timeout"]}
+        return [{"error": "Scraping timed out after 3 minutes"}], {"step": "timeout", "errors": ["Overall timeout"]}
     except Exception as e:
         return [{"error": f"Scraping failed: {str(e)}"}], {"step": "exception", "errors": [str(e)]} 
