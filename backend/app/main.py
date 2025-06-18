@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import os
@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 
 # Import scraper functionality
 from app.scraper import ScrapePayload, scrape_linkedin_posts
+
+# Import embedding functionality
+from app.embed import create_embedding
 
 # Import Supabase client
 from supabase import create_client
@@ -45,6 +48,7 @@ class SummarizeResponse(BaseModel):
 class ScrapeResponse(BaseModel):
     inserted: int
     status: str
+    debug_info: Dict[str, Any] = {}
 
 # Health check endpoint (for Docker health check)
 @app.get("/health")
@@ -116,100 +120,108 @@ async def scrape_info():
         }
     }
 
-@app.post("/scrape/debug")
-async def scrape_linkedin_debug(request: ScrapePayload):
+@app.get("/scrape/debug")
+async def debug_scrape(
+    linkedin_url: str = Query(..., description="LinkedIn profile URL"),
+    founder_id: str = Query(None, description="Founder UUID"),
+    company_id: str = Query(None, description="Company UUID"),
+    start_date: str = Query(default="2023-01-01", description="Start date (YYYY-MM-DD)")
+):
     """
-    DEBUG version of scraper - returns detailed debug info
+    Debug endpoint to test LinkedIn scraping with detailed information
     """
-    debug_info = {
-        "step": "starting",
-        "linkedin_credentials": {
-            "user_set": bool(os.getenv("LINKEDIN_USER")),
-            "pass_set": bool(os.getenv("LINKEDIN_PASS"))
-        },
-        "request_data": {
-            "linkedin_url": request.linkedin_url,
-            "founder_id": request.founder_id,
-            "company_id": request.company_id,
-            "start_date": request.start_date,
-            "max_scrolls": request.max_scrolls
-        }
-    }
-    
     try:
-        debug_info["step"] = "calling_scraper"
+        from .scraper import ScrapePayload, scrape_linkedin_posts
         
-        # Call the scraper function directly
-        from app.scraper import linkedin_scraper
-        posts = await linkedin_scraper.scrape_profile_posts(request)
+        payload = ScrapePayload(
+            linkedin_url=linkedin_url,
+            founder_id=founder_id,
+            company_id=company_id,
+            start_date=start_date,
+            max_scrolls=5  # Limit for debugging
+        )
         
-        debug_info["step"] = "scraper_completed"
-        debug_info["raw_posts_count"] = len(posts)
-        debug_info["sample_posts"] = []
+        # Get posts and debug info
+        posts, debug_info = await scrape_linkedin_posts(payload)
         
-        # Convert to dict format
-        posts_dict = [post.dict() for post in posts]
-        
-        if posts_dict:
-            debug_info["sample_posts"] = posts_dict[:2]  # First 2 posts
-        
-        return {
-            "posts_found": len(posts_dict),
-            "posts": posts_dict[:3],  # Return first 3 posts
-            "debug_info": debug_info,
+        # Prepare debug response
+        debug_response = {
+            "posts_found": len(posts),
+            "posts": posts[:3],  # Show first 3 posts
+            "debug_info": {
+                **debug_info,
+                "linkedin_credentials": {
+                    "user_set": bool(os.getenv("LINKEDIN_USER")),
+                    "pass_set": bool(os.getenv("LINKEDIN_PASS"))
+                },
+                "request_data": {
+                    "linkedin_url": linkedin_url,
+                    "founder_id": founder_id,
+                    "company_id": company_id,
+                    "start_date": start_date,
+                    "max_scrolls": 5
+                }
+            },
             "status": "debug_complete"
         }
         
+        return [debug_response]
+        
     except Exception as e:
-        debug_info["step"] = "error"
-        debug_info["error"] = str(e)
-        debug_info["error_type"] = type(e).__name__
-        
-        import traceback
-        debug_info["traceback"] = traceback.format_exc()
-        
-        return {
-            "posts_found": 0,
-            "posts": [],
-            "debug_info": debug_info,
-            "status": f"debug_error: {str(e)}"
-        }
+        return [{"error": f"Debug scraping failed: {str(e)}", "status": "error"}]
 
-@app.post("/scrape", response_model=ScrapeResponse)
-async def scrape_linkedin(request: ScrapePayload):
+@app.post("/scrape")
+async def scrape_linkedin(payload: ScrapePayload):
     """
-    Scrape LinkedIn posts from a founder's profile using Playwright
-    Writes posts directly to Supabase and returns insertion count
+    Scrape LinkedIn posts and store them in the database
     """
     try:
-        # Scrape posts from LinkedIn
-        posts = await scrape_linkedin_posts(request)
+        # Scrape posts with debug info
+        posts, debug_info = await scrape_linkedin_posts(payload)
         
-        # Handle scraper errors (from timeout optimization)
-        if posts and isinstance(posts[0], dict) and "error" in posts[0]:
-            return {
-                "inserted": 0,
-                "status": f"scraper_error: {posts[0]['error']}"
-            }
+        if not posts or (len(posts) == 1 and "error" in posts[0]):
+            return ScrapeResponse(
+                inserted=0, 
+                status="no_posts_found",
+                debug_info=debug_info
+            )
         
-        # Insert posts directly into Supabase
-        if posts:
-            result = sb.table("linkedin_posts").upsert(posts).execute()
-            return {
-                "inserted": len(posts),
-                "status": "ok"
-            }
-        else:
-            return {
-                "inserted": 0,
-                "status": "no_posts_found"
-            }
-            
+        # Insert posts into database
+        inserted_count = 0
+        for post in posts:
+            try:
+                # Create embedding for the post
+                embedding = create_embedding(post["post_text"])
+                
+                # Insert into database with conflict handling
+                result = sb.table("linkedin_posts").upsert({
+                    "founder_id": post.get("founder_id"),
+                    "company_id": post.get("company_id"),
+                    "post_text": post["post_text"],
+                    "post_url": post.get("post_url"),
+                    "posted_at": post["posted_at"],
+                    "embedding": embedding
+                }, on_conflict="founder_id,company_id,post_url").execute()
+                
+                if result.data:
+                    inserted_count += 1
+                    
+            except Exception as e:
+                print(f"Error inserting post: {e}")
+                continue
+        
+        return ScrapeResponse(
+            inserted=inserted_count, 
+            status="success" if inserted_count > 0 else "no_posts_inserted",
+            debug_info=debug_info
+        )
+        
     except Exception as e:
-        return {
-            "inserted": 0,
-            "status": f"error: {str(e)}"
-        }
+        return ScrapeResponse(
+            inserted=0, 
+            status="error",
+            debug_info={"error": str(e)}
+        )
 
 if __name__ == "__main__":
     import uvicorn
