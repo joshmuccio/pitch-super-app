@@ -10,6 +10,28 @@ Internal data + AI platform for The Pitch Fund.
 - **AI Models**: OpenAI embeddings + multiple LLMs for summarization
 - **Deployment**: Render (backend), Vercel (frontend)
 
+## Database Schema
+
+```sql
+-- Core entities
+companies (id, name, website, headquarters, linkedin_url)
+founders (id, full_name, linkedin_url, company_id → companies)
+
+-- Content & Analysis  
+linkedin_posts (id, founder_id → founders, company_id → companies, 
+                post_text, post_url, posted_at, scraped_at, embedding[1536])
+weekly_summaries (id, company_id → companies, model_name, summary_md, created_at)
+
+-- Key constraints
+UNIQUE (coalesce(founder_id, company_id), post_url)  -- Deduplication
+```
+
+**Relationships:**
+- Companies can have many founders and posts
+- Posts can be linked to either founders OR companies directly  
+- Unique constraint prevents duplicate posts per entity
+- 1536-dim embeddings for semantic search
+
 ## Project Structure
 
 ```

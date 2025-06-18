@@ -59,7 +59,13 @@ async def root():
     return {
         "message": "Pitch Super App API",
         "status": "running",
-        "endpoints": ["/health", "/embed", "/summarize", "/scrape"]
+        "endpoints": ["/health", "/embed", "/summarize", "/scrape"],
+        "methods": {
+            "/health": "GET",
+            "/embed": "POST", 
+            "/summarize": "POST",
+            "/scrape": "GET (info) | POST (execute)"
+        }
     }
 
 # Embedding endpoint (Day 2 implementation)
@@ -91,6 +97,62 @@ async def summarize_posts(request: SummarizeRequest):
     }
 
 # LinkedIn scraping endpoint (Day 1 implementation) - Now writes directly to Supabase
+@app.get("/scrape")
+async def scrape_info():
+    """
+    GET handler for /scrape endpoint - provides usage information
+    """
+    return {
+        "message": "LinkedIn Scraper Endpoint",
+        "method": "POST",
+        "description": "Scrapes LinkedIn posts and writes directly to Supabase",
+        "required_fields": ["linkedin_url", "founder_id", "start_date"],
+        "optional_fields": ["company_id", "max_scrolls"],
+        "example": {
+            "linkedin_url": "https://linkedin.com/in/founder",
+            "founder_id": "uuid-string",
+            "start_date": "2024-01-01",
+            "max_scrolls": 10
+        }
+    }
+
+@app.post("/scrape/debug")
+async def scrape_linkedin_debug(request: ScrapePayload):
+    """
+    DEBUG version of scraper - returns detailed logs instead of writing to DB
+    """
+    try:
+        # Capture debug output
+        import sys
+        from io import StringIO
+        
+        # Redirect stdout to capture debug prints
+        old_stdout = sys.stdout
+        debug_output = StringIO()
+        sys.stdout = debug_output
+        
+        try:
+            posts = await scrape_linkedin_posts(request)
+        finally:
+            sys.stdout = old_stdout
+        
+        debug_logs = debug_output.getvalue()
+        
+        return {
+            "posts_found": len(posts) if posts and not ("error" in str(posts)) else 0,
+            "posts": posts[:3] if posts else [],  # Return first 3 posts for preview
+            "debug_logs": debug_logs,
+            "status": "debug_complete"
+        }
+        
+    except Exception as e:
+        return {
+            "posts_found": 0,
+            "posts": [],
+            "debug_logs": f"Error: {str(e)}",
+            "status": f"debug_error: {str(e)}"
+        }
+
 @app.post("/scrape", response_model=ScrapeResponse)
 async def scrape_linkedin(request: ScrapePayload):
     """

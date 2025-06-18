@@ -7,15 +7,16 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
 class LinkedInPost(BaseModel):
-    founder_id: Optional[str] = None  # UUID as string (will be converted by Supabase)
+    founder_id: Optional[str] = None
+    company_id: Optional[str] = None
     post_text: str
     post_url: Optional[str] = None
-    posted_at: str  # ISO format datetime string for timestamptz
+    posted_at: str
 
 class ScrapePayload(BaseModel):
     linkedin_url: str
     founder_id: Optional[str] = None
-    company_id: Optional[str] = None  # Not stored in linkedin_posts table, just for reference
+    company_id: Optional[str] = None
     start_date: str  # "YYYY-MM-DD"
     max_scrolls: Optional[int] = 10  # Limit scrolling to prevent timeouts
 
@@ -140,21 +141,17 @@ class LinkedInScraper:
                 href = link_elem.get("href")
                 if href and isinstance(href, str):
                     post_url = href.split("?")[0]
-                    # Ensure we have a full LinkedIn URL
-                    if not post_url.startswith("https://"):
-                        post_url = f"https://www.linkedin.com{post_url}"
             
             # Extract and clean post text
             post_text = " ".join(article.get_text(" ", strip=True).split())
             
-            # Only add posts that have meaningful content
-            if post_text and len(post_text.strip()) > 10:
-                posts.append(LinkedInPost(
-                    founder_id=payload.founder_id,
-                    post_text=post_text,
-                    post_url=post_url,
-                    posted_at=posted.isoformat()  # ISO format for Supabase timestamptz
-                ))
+            posts.append(LinkedInPost(
+                founder_id=payload.founder_id,
+                company_id=payload.company_id,
+                post_text=post_text,
+                post_url=post_url,
+                posted_at=posted.isoformat()
+            ))
         
         return posts
 
@@ -163,13 +160,13 @@ linkedin_scraper = LinkedInScraper()
 
 async def scrape_linkedin_posts(payload: ScrapePayload) -> List[Dict[str, Any]]:
     """
-    Main scraping function that returns raw dictionaries for Supabase insertion
+    Main scraping function that returns raw dictionaries (timeout-optimized)
     
     Args:
         payload: ScrapePayload containing scraping parameters
         
     Returns:
-        List of post dictionaries formatted for Supabase
+        List of post dictionaries
     """
     try:
         # Add overall timeout of 2 minutes for the entire operation
@@ -177,7 +174,6 @@ async def scrape_linkedin_posts(payload: ScrapePayload) -> List[Dict[str, Any]]:
             linkedin_scraper.scrape_profile_posts(payload),
             timeout=120.0
         )
-        # Convert to dictionaries for Supabase insertion
         return [post.dict() for post in posts]
     except asyncio.TimeoutError:
         return [{"error": "Scraping timed out after 2 minutes"}]
