@@ -276,6 +276,54 @@ class LinkedInScraper:
                             debug_info["public_access_successful"] = False
                             debug_info["step"] = "public_access_failed"
                             
+                            # Try Google search fallback for LinkedIn posts
+                            debug_info["step"] = "trying_google_search_fallback"
+                            try:
+                                # Extract profile name from URL for Google search
+                                profile_name = payload.linkedin_url.split("/in/")[-1].replace("-", " ").strip("/")
+                                
+                                # Search Google for recent LinkedIn posts from this profile
+                                google_query = f'site:linkedin.com/posts "{profile_name}" after:2023-01-01'
+                                google_url = f"https://www.google.com/search?q={google_query.replace(' ', '+')}"
+                                
+                                await page.goto(google_url, timeout=15000)
+                                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                                
+                                # Extract LinkedIn post URLs from Google results
+                                google_content = await page.content()
+                                debug_info["google_search_attempted"] = True
+                                debug_info["google_results_length"] = len(google_content)
+                                
+                                # Look for LinkedIn post links in Google results
+                                import re
+                                linkedin_post_urls = re.findall(r'https://www\.linkedin\.com/posts/[^"<>\s]+', google_content)
+                                debug_info["linkedin_posts_found_in_google"] = len(linkedin_post_urls)
+                                
+                                if linkedin_post_urls:
+                                    debug_info["sample_post_urls"] = linkedin_post_urls[:3]  # Show first 3
+                                    
+                                    # Try to access one of the posts directly
+                                    for post_url in linkedin_post_urls[:2]:  # Try first 2 posts
+                                        try:
+                                            await page.goto(post_url, timeout=10000)
+                                            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                                            post_content = await page.content()
+                                            
+                                            if "Sign in" not in post_content and len(post_content) > 5000:
+                                                debug_info["direct_post_access_successful"] = True
+                                                debug_info["accessed_post_url"] = post_url
+                                                # Use this post content instead
+                                                html = post_content
+                                                debug_info["html_source"] = "direct_linkedin_post"
+                                                break
+                                        except Exception as e:
+                                            debug_info["errors"].append(f"Failed to access post {post_url}: {str(e)}")
+                                            continue
+                                
+                            except Exception as e:
+                                debug_info["errors"].append(f"Google search fallback failed: {str(e)}")
+                                debug_info["google_search_attempted"] = False
+                            
                     except Exception as e:
                         debug_info["errors"].append(f"Public access attempt failed: {str(e)}")
                         debug_info["public_access_successful"] = False

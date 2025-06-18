@@ -774,6 +774,68 @@ async def debug_params(request: Request):
         "path_params": request.path_params
     }
 
+@app.get("/scrape/alternative")
+async def alternative_scrape(
+    linkedin_url: str = Query(..., description="LinkedIn profile URL"),
+    founder_id: str = Query(None, description="Founder UUID"),
+    company_id: str = Query(None, description="Company UUID"),
+):
+    """
+    Alternative scraping approach using public data sources when LinkedIn login fails
+    """
+    try:
+        # Extract profile information from URL
+        profile_name = linkedin_url.split("/in/")[-1].replace("-", " ").strip("/")
+        
+        # Mock data for now - in production this could use:
+        # 1. Web scraping APIs like ScrapingBee, Apify, etc.
+        # 2. Social media aggregators
+        # 3. Public RSS feeds
+        # 4. Archive.org snapshots
+        
+        mock_posts = [
+            {
+                "founder_id": founder_id,
+                "company_id": company_id,
+                "post_text": f"Sample post from {profile_name} - This would be scraped from alternative sources",
+                "post_url": f"{linkedin_url}/posts/sample-1",
+                "posted_at": "2024-01-15T10:00:00Z"
+            },
+            {
+                "founder_id": founder_id,
+                "company_id": company_id,
+                "post_text": f"Another sample post from {profile_name} - Alternative data source",
+                "post_url": f"{linkedin_url}/posts/sample-2", 
+                "posted_at": "2024-01-10T15:30:00Z"
+            }
+        ]
+        
+        return [{
+            "posts_found": len(mock_posts),
+            "posts": mock_posts,
+            "debug_info": {
+                "step": "alternative_complete",
+                "profile_name": profile_name,
+                "data_source": "mock_alternative_api",
+                "linkedin_url": linkedin_url,
+                "founder_id": founder_id,
+                "company_id": company_id
+            },
+            "status": "alternative_complete"
+        }]
+        
+    except Exception as e:
+        return [{
+            "posts_found": 0,
+            "posts": [],
+            "debug_info": {
+                "step": "alternative_error",
+                "error": str(e),
+                "linkedin_url": linkedin_url
+            },
+            "status": "alternative_error"
+        }]
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
