@@ -135,12 +135,15 @@ class LinkedInScraper:
                 await page.wait_for_load_state("domcontentloaded", timeout=10000)
                 
                 current_url = page.url
+                debug_info["initial_url"] = current_url
+                
                 if "login" in current_url or "challenge" in current_url:
                     # Need to log in
                     debug_info["step"] = "login_required"
                     debug_info["login_attempted"] = True
                     
                     await page.goto("https://www.linkedin.com/login", timeout=15000)
+                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
                     
                     # Validate credentials before attempting to fill
                     if not self.linkedin_user or not self.linkedin_pass:
@@ -148,12 +151,25 @@ class LinkedInScraper:
                         debug_info["step"] = "missing_credentials"
                         return [], debug_info
                     
-                    # Fill login form with error handling
+                    # Fill login form with more realistic timing
                     try:
-                        await page.fill("#username", self.linkedin_user)
-                        await page.fill("#password", self.linkedin_pass)
+                        # Wait for form to be ready
+                        await page.wait_for_selector("#username", timeout=10000)
+                        await page.wait_for_selector("#password", timeout=10000)
+                        
+                        # Type slowly to mimic human behavior
+                        await page.fill("#username", "")  # Clear first
+                        await page.type("#username", self.linkedin_user, delay=50)  # 50ms between keystrokes
+                        await page.wait_for_timeout(500)  # Brief pause
+                        
+                        await page.fill("#password", "")  # Clear first
+                        await page.type("#password", self.linkedin_pass, delay=50)  # 50ms between keystrokes
+                        await page.wait_for_timeout(1000)  # Pause before clicking
+                        
+                        # Click submit button
                         await page.click("button[type=submit]")
                         debug_info["login_form_filled"] = True
+                        
                     except Exception as e:
                         debug_info["errors"].append(f"Login form error: {str(e)}")
                         debug_info["step"] = "login_form_error"
@@ -161,31 +177,78 @@ class LinkedInScraper:
                     
                     debug_info["step"] = "login_waiting"
                     
-                    # Wait for login completion
+                    # Wait for login completion with better error detection
                     try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=20000)
-                        # Check if login was successful
+                        # Wait longer for login to complete
+                        await page.wait_for_timeout(3000)  # Wait 3 seconds for processing
+                        await page.wait_for_load_state("domcontentloaded", timeout=30000)  # 30 second timeout
+                        
+                        # Check current URL and page content for various scenarios
                         current_url = page.url
-                        if "login" not in current_url and "challenge" not in current_url:
+                        page_content = await page.content()
+                        
+                        debug_info["post_login_url"] = current_url
+                        
+                        # Check for various login failure scenarios
+                        if "login" in current_url:
+                            debug_info["errors"].append("Still on login page - login failed")
+                            debug_info["step"] = "login_failed"
+                        elif "challenge" in current_url:
+                            debug_info["errors"].append("LinkedIn challenge/verification required")
+                            debug_info["step"] = "challenge_required"
+                        elif "captcha" in page_content.lower():
+                            debug_info["errors"].append("CAPTCHA verification required")
+                            debug_info["step"] = "captcha_required"
+                        elif "verification" in page_content.lower():
+                            debug_info["errors"].append("Email/phone verification required")
+                            debug_info["step"] = "verification_required"
+                        elif "security" in page_content.lower() and "check" in page_content.lower():
+                            debug_info["errors"].append("Security check required")
+                            debug_info["step"] = "security_check_required"
+                        elif "feed" in current_url or "linkedin.com/in/" in current_url:
                             debug_info["login_success"] = True
                             debug_info["step"] = "login_success"
                         else:
-                            debug_info["errors"].append("Login failed or requires additional verification")
-                            debug_info["step"] = "login_failed"
+                            debug_info["errors"].append(f"Unknown login state - URL: {current_url}")
+                            debug_info["step"] = "login_unknown"
+                            
                     except Exception as e:
                         debug_info["errors"].append(f"Login wait timeout: {str(e)}")
                         debug_info["step"] = "login_timeout"
+                        
                 else:
                     # Already logged in
                     debug_info["login_success"] = True
                     debug_info["step"] = "already_logged_in"
                 
+                # If login failed, try to continue anyway to see what we can access
+                if not debug_info.get("login_success", False):
+                    debug_info["errors"].append("Continuing without successful login - may have limited access")
+                
                 debug_info["step"] = "navigating_to_profile"
                 
                 # Navigate to profile activity page (where posts are actually located)
                 activity_url = payload.linkedin_url.rstrip('/') + '/recent-activity/'
-                await page.goto(activity_url, timeout=15000)
-                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                
+                try:
+                    await page.goto(activity_url, timeout=15000)
+                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    debug_info["profile_loaded"] = True
+                except Exception as e:
+                    debug_info["errors"].append(f"Failed to load activity page: {str(e)}")
+                    
+                    # Fallback: try the main profile page
+                    try:
+                        await page.goto(payload.linkedin_url, timeout=15000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                        debug_info["profile_loaded"] = True
+                        debug_info["fallback_to_main_profile"] = True
+                        activity_url = payload.linkedin_url
+                    except Exception as e2:
+                        debug_info["errors"].append(f"Failed to load main profile page: {str(e2)}")
+                        debug_info["profile_loaded"] = False
+                        debug_info["step"] = "profile_load_failed"
+                        return [], debug_info
                 
                 # Reduced wait time for faster operation
                 await page.wait_for_timeout(1500)  # Reduced from 3 seconds to 1.5 seconds
@@ -193,7 +256,6 @@ class LinkedInScraper:
                 # Don't wait for selectors - just proceed to capture HTML like timing test does
                 debug_info["timing_test_approach"] = True
                 
-                debug_info["profile_loaded"] = True
                 debug_info["activity_url"] = activity_url
                 debug_info["step"] = "activity_page_loaded"
                 
