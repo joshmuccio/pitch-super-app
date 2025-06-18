@@ -76,6 +76,10 @@ class LinkedInScraper:
             # Detect if running in production (Render) or locally
             is_production = bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT")) or not os.getenv("HOME", "").startswith("/Users/")
             
+            # Set environment variables for headless mode in containers
+            if is_production:
+                os.environ["DISPLAY"] = ":99"  # Virtual display for headless mode
+            
             browser = await pw.chromium.launch_persistent_context(
                 user_data_dir="/tmp/linkedin_cache",
                 headless=is_production,  # Run headless in production, headed locally for debugging
@@ -84,6 +88,22 @@ class LinkedInScraper:
                     '--no-sandbox', 
                     '--disable-dev-shm-usage',  # Helps with Docker
                     '--disable-blink-features=AutomationControlled',  # Hide automation
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor',
+                    # Additional args for headless mode in containers
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding',
+                    '--disable-extensions',
+                    '--disable-plugins',
+                    '--disable-default-apps',
+                    '--no-first-run'
+                ] if is_production else [
+                    '--no-sandbox', 
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
                     '--disable-web-security',
                     '--disable-features=VizDisplayCompositor'
                 ],
