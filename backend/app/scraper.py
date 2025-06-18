@@ -76,37 +76,69 @@ class LinkedInScraper:
             # Detect if running in production (Render) or locally
             is_production = bool(os.getenv("RENDER")) or bool(os.getenv("RAILWAY_ENVIRONMENT")) or not os.getenv("HOME", "").startswith("/Users/")
             
-            # Set environment variables for headless mode in containers
+            # Enhanced browser configuration for production stealth
+            browser_args = [
+                "--no-sandbox",
+                "--disable-setuid-sandbox", 
+                "--disable-dev-shm-usage",
+                "--disable-web-security",
+                "--disable-features=VizDisplayCompositor",
+                "--disable-blink-features=AutomationControlled",  # Hide automation
+                "--disable-extensions-except=/path/to/extension",
+                "--disable-extensions",
+                "--no-first-run",
+                "--disable-default-apps",
+                "--disable-infobars",
+                "--window-size=1920,1080",  # Standard desktop resolution
+                "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"  # Real user agent
+            ]
+            
             if is_production:
-                os.environ["DISPLAY"] = ":99"  # Virtual display for headless mode
+                browser_args.extend([
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows", 
+                    "--disable-renderer-backgrounding",
+                    "--disable-plugins",
+                    "--headless=new"  # Use new headless mode
+                ])
+                # Set virtual display for Linux containers
+                os.environ["DISPLAY"] = ":99"
+            
+            # Check for proxy configuration
+            proxy_server = os.getenv("PROXY_SERVER")  # Format: "ip:port" or "user:pass@ip:port"
+            
+            launch_options = {
+                "headless": is_production,
+                "args": browser_args,
+                "slow_mo": 100 if not is_production else 50,  # Slow down automation to appear human
+            }
+            
+            # Add proxy if configured
+            if proxy_server:
+                if "@" in proxy_server:
+                    # Format: user:pass@ip:port
+                    auth_part, server_part = proxy_server.split("@")
+                    launch_options["proxy"] = {
+                        "server": f"http://{server_part}",
+                        "username": auth_part.split(":")[0],
+                        "password": auth_part.split(":")[1]
+                    }
+                    debug_info["proxy_used"] = f"http://{server_part} (with auth)"
+                else:
+                    # Format: ip:port
+                    launch_options["proxy"] = {"server": f"http://{proxy_server}"}
+                    debug_info["proxy_used"] = f"http://{proxy_server}"
+            else:
+                debug_info["proxy_used"] = "none"
             
             browser = await pw.chromium.launch_persistent_context(
                 user_data_dir="/tmp/linkedin_cache",
-                headless=is_production,  # Run headless in production, headed locally for debugging
-                slow_mo=0 if is_production else 100,  # No slow motion in production
-                args=[
-                    '--no-sandbox', 
-                    '--disable-dev-shm-usage',  # Helps with Docker
-                    '--disable-blink-features=AutomationControlled',  # Hide automation
-                    '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor',
-                    # Additional args for headless mode in containers
-                    '--disable-gpu',
-                    '--disable-software-rasterizer',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding',
-                    '--disable-extensions',
-                    '--disable-plugins',
-                    '--disable-default-apps',
-                    '--no-first-run'
-                ] if is_production else [
-                    '--no-sandbox', 
-                    '--disable-dev-shm-usage',
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor'
-                ],
+                headless=launch_options["headless"],
+                slow_mo=launch_options["slow_mo"],
+                args=launch_options["args"],
+                proxy=launch_options.get("proxy"),
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 viewport={"width": 1920, "height": 1080},
                 extra_http_headers={
@@ -224,6 +256,29 @@ class LinkedInScraper:
                 # If login failed, try to continue anyway to see what we can access
                 if not debug_info.get("login_success", False):
                     debug_info["errors"].append("Continuing without successful login - may have limited access")
+                    
+                    # Try alternative approach: Access profile directly without login
+                    debug_info["step"] = "trying_public_access"
+                    try:
+                        # Clear any existing session data
+                        await page.context.clear_cookies()
+                        
+                        # Try to access the profile directly as a public user
+                        await page.goto(payload.linkedin_url, timeout=15000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                        
+                        # Check if we can see any content
+                        page_content = await page.content()
+                        if "Sign in" not in page_content and len(page_content) > 10000:
+                            debug_info["public_access_successful"] = True
+                            debug_info["step"] = "public_access_success"
+                        else:
+                            debug_info["public_access_successful"] = False
+                            debug_info["step"] = "public_access_failed"
+                            
+                    except Exception as e:
+                        debug_info["errors"].append(f"Public access attempt failed: {str(e)}")
+                        debug_info["public_access_successful"] = False
                 
                 debug_info["step"] = "navigating_to_profile"
                 
