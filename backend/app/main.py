@@ -7,8 +7,16 @@ from dotenv import load_dotenv
 # Import scraper functionality
 from app.scraper import ScrapePayload, scrape_linkedin_posts
 
+# Import Supabase client
+from supabase import create_client
+
 # Load environment variables
 load_dotenv()
+
+# Initialize Supabase client
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")   # service role!
+sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -35,7 +43,7 @@ class SummarizeResponse(BaseModel):
     status: str
 
 class ScrapeResponse(BaseModel):
-    posts: List[Dict[str, Any]]
+    inserted: int
     status: str
 
 # Health check endpoint (for Docker health check)
@@ -82,22 +90,40 @@ async def summarize_posts(request: SummarizeRequest):
         "status": "ok"
     }
 
-# LinkedIn scraping endpoint (Day 1 implementation)
+# LinkedIn scraping endpoint (Day 1 implementation) - Now writes directly to Supabase
 @app.post("/scrape", response_model=ScrapeResponse)
 async def scrape_linkedin(request: ScrapePayload):
     """
     Scrape LinkedIn posts from a founder's profile using Playwright
-    Returns posts that can be inserted into Supabase with embedding = NULL
+    Writes posts directly to Supabase and returns insertion count
     """
     try:
+        # Scrape posts from LinkedIn
         posts = await scrape_linkedin_posts(request)
-        return {
-            "posts": posts,
-            "status": "ok"
-        }
+        
+        # Handle scraper errors (from timeout optimization)
+        if posts and isinstance(posts[0], dict) and "error" in posts[0]:
+            return {
+                "inserted": 0,
+                "status": f"scraper_error: {posts[0]['error']}"
+            }
+        
+        # Insert posts directly into Supabase
+        if posts:
+            result = sb.table("linkedin_posts").upsert(posts).execute()
+            return {
+                "inserted": len(posts),
+                "status": "ok"
+            }
+        else:
+            return {
+                "inserted": 0,
+                "status": "no_posts_found"
+            }
+            
     except Exception as e:
         return {
-            "posts": [],
+            "inserted": 0,
             "status": f"error: {str(e)}"
         }
 
