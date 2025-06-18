@@ -119,37 +119,59 @@ async def scrape_info():
 @app.post("/scrape/debug")
 async def scrape_linkedin_debug(request: ScrapePayload):
     """
-    DEBUG version of scraper - returns detailed logs instead of writing to DB
+    DEBUG version of scraper - returns detailed debug info
     """
+    debug_info = {
+        "step": "starting",
+        "linkedin_credentials": {
+            "user_set": bool(os.getenv("LINKEDIN_USER")),
+            "pass_set": bool(os.getenv("LINKEDIN_PASS"))
+        },
+        "request_data": {
+            "linkedin_url": request.linkedin_url,
+            "founder_id": request.founder_id,
+            "company_id": request.company_id,
+            "start_date": request.start_date,
+            "max_scrolls": request.max_scrolls
+        }
+    }
+    
     try:
-        # Capture debug output
-        import sys
-        from io import StringIO
+        debug_info["step"] = "calling_scraper"
         
-        # Redirect stdout to capture debug prints
-        old_stdout = sys.stdout
-        debug_output = StringIO()
-        sys.stdout = debug_output
+        # Call the scraper function directly
+        from app.scraper import linkedin_scraper
+        posts = await linkedin_scraper.scrape_profile_posts(request)
         
-        try:
-            posts = await scrape_linkedin_posts(request)
-        finally:
-            sys.stdout = old_stdout
+        debug_info["step"] = "scraper_completed"
+        debug_info["raw_posts_count"] = len(posts)
+        debug_info["sample_posts"] = []
         
-        debug_logs = debug_output.getvalue()
+        # Convert to dict format
+        posts_dict = [post.dict() for post in posts]
+        
+        if posts_dict:
+            debug_info["sample_posts"] = posts_dict[:2]  # First 2 posts
         
         return {
-            "posts_found": len(posts) if posts and not ("error" in str(posts)) else 0,
-            "posts": posts[:3] if posts else [],  # Return first 3 posts for preview
-            "debug_logs": debug_logs,
+            "posts_found": len(posts_dict),
+            "posts": posts_dict[:3],  # Return first 3 posts
+            "debug_info": debug_info,
             "status": "debug_complete"
         }
         
     except Exception as e:
+        debug_info["step"] = "error"
+        debug_info["error"] = str(e)
+        debug_info["error_type"] = type(e).__name__
+        
+        import traceback
+        debug_info["traceback"] = traceback.format_exc()
+        
         return {
             "posts_found": 0,
             "posts": [],
-            "debug_logs": f"Error: {str(e)}",
+            "debug_info": debug_info,
             "status": f"debug_error: {str(e)}"
         }
 
